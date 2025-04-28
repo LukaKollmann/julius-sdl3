@@ -5,8 +5,8 @@
 #include "platform/platform.h"
 #include "platform/vita/vita.h"
 
-#include "SDL.h"
-#include "SDL_mixer.h"
+#include <SDL3/SDL.h>
+#include <SDL3_mixer/SDL_mixer.h>
 
 #include <stdlib.h>
 #include <string.h>
@@ -16,16 +16,10 @@
 #endif
 
 #define AUDIO_RATE 22050
-#define AUDIO_FORMAT AUDIO_S16
+#define AUDIO_FORMAT SDL_AUDIO_S16LE
 #define AUDIO_CHANNELS 2
-#define AUDIO_BUFFERS 1024
 
 #define MAX_CHANNELS 150
-
-#if SDL_VERSION_ATLEAST(2, 0, 7)
-#define USE_SDL_AUDIOSTREAM
-#endif
-#define HAS_AUDIOSTREAM() (platform_sdl_version_at_least(2, 0, 7))
 
 #ifdef __vita__
 static struct {
@@ -33,6 +27,107 @@ static struct {
     char *buffer;
     int size;
 } vita_music_data;
+#endif
+
+// Emulate SDL_RWFromFP
+#if defined(__vita__) || defined(__ANDROID__)
+typedef struct IOStreamStdioFPData {
+    FILE *fp;
+    bool autoclose;
+} IOStreamStdioFPData;
+
+static Sint64 SDLCALL stdio_seek(void *userdata, Sint64 offset, int whence)
+{
+    FILE *fp = ((IOStreamStdioFPData *) userdata)->fp;
+    int stdiowhence;
+
+    switch (whence) {
+        case SDL_IO_SEEK_SET:
+            stdiowhence = SEEK_SET;
+            break;
+        case SDL_IO_SEEK_CUR:
+            stdiowhence = SEEK_CUR;
+            break;
+        case SDL_IO_SEEK_END:
+            stdiowhence = SEEK_END;
+            break;
+        default:
+            SDL_SetError("Unknown value for 'whence'");
+            return -1;
+    }
+
+    if (fseek(fp, (fseek_off_t) offset, stdiowhence) == 0) {
+        const Sint64 pos = ftell(fp);
+        if (pos < 0) {
+            SDL_SetError("Couldn't get stream offset");
+            return -1;
+        }
+        return pos;
+    }
+    SDL_SetError("Couldn't seek in stream");
+    return -1;
+}
+
+static size_t SDLCALL stdio_read(void *userdata, void *ptr, size_t size, SDL_IOStatus *status)
+{
+    FILE *fp = ((IOStreamStdioFPData *) userdata)->fp;
+    const size_t bytes = fread(ptr, 1, size, fp);
+    if (bytes == 0 && ferror(fp)) {
+        SDL_SetError("Couldn't read stream");
+    }
+    return bytes;
+}
+
+static size_t SDLCALL stdio_write(void *userdata, const void *ptr, size_t size, SDL_IOStatus *status)
+{
+    FILE *fp = ((IOStreamStdioFPData *) userdata)->fp;
+    const size_t bytes = fwrite(ptr, 1, size, fp);
+    if (bytes == 0 && ferror(fp)) {
+        SDL_SetError("Couldn't write stream");
+    }
+    return bytes;
+}
+
+static bool SDLCALL stdio_close(void *userdata)
+{
+    IOStreamStdioData *rwopsdata = (IOStreamStdioData *) userdata;
+    bool status = true;
+    if (rwopsdata->autoclose) {
+        if (fclose(rwopsdata->fp) != 0) {
+            SDL_SetError("Couldn't close stream");
+            status = false;
+        }
+    }
+    return status;
+}
+
+SDL_IOStream *SDL_RWFromFP(FILE *fp, bool autoclose)
+{
+    SDL_IOStreamInterface iface;
+    IOStreamStdioFPData *rwopsdata;
+    SDL_IOStream *rwops;
+
+    rwopsdata = (IOStreamStdioFPData *) SDL_malloc(sizeof(*rwopsdata));
+    if (!rwopsdata) {
+        return NULL;
+    }
+
+    SDL_INIT_INTERFACE(&iface);
+    /* There's no stdio_size because SDL_GetIOSize emulates it the same way we'd do it for stdio anyhow. */
+    iface.seek = stdio_seek;
+    iface.read = stdio_read;
+    iface.write = stdio_write;
+    iface.close = stdio_close;
+
+    rwopsdata->fp = fp;
+    rwopsdata->autoclose = autoclose;
+
+    rwops = SDL_OpenIO(&iface, rwopsdata);
+    if (!rwops) {
+        iface.close(rwopsdata);
+    }
+    return rwops;
+}
 #endif
 
 typedef struct {
@@ -49,20 +144,12 @@ static struct {
 static struct {
     SDL_AudioFormat format;
     SDL_AudioFormat dst_format;
-#ifdef USE_SDL_AUDIOSTREAM
     SDL_AudioStream *stream;
-    int use_audiostream;
-#endif
-    SDL_AudioCVT cvt;
-    unsigned char *buffer;
-    int buffer_size;
-    int cur_read;
-    int cur_write;
 } custom_music;
 
-static int percentage_to_volume(int percentage)
+static float percentage_to_volume(int percentage)
 {
-    return percentage * SDL_MIX_MAXVOLUME / 100;
+    return percentage / 100.f;
 }
 
 static void init_channels(void)
@@ -75,39 +162,20 @@ static void init_channels(void)
 
 void sound_device_open(void)
 {
-#ifdef USE_SDL_AUDIOSTREAM
-    custom_music.use_audiostream = HAS_AUDIOSTREAM();
-#endif
-    // Windows: use directsound by default, as wasapi has issues
-#ifdef __WINDOWS__
-    SDL_AudioInit("directsound");
-#endif
-    if (0 == Mix_OpenAudio(AUDIO_RATE, AUDIO_FORMAT, AUDIO_CHANNELS, AUDIO_BUFFERS)) {
+    SDL_AudioSpec spec = {
+      .freq = AUDIO_RATE,
+      .format = AUDIO_FORMAT,
+      .channels = AUDIO_CHANNELS,
+    };
+    if (Mix_OpenAudio(0,&spec)) {
         init_channels();
         return;
     }
-    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Sound failed to initialize using default driver: %s", Mix_GetError());
-    // Try to work around SDL choosing the wrong driver on Windows sometimes
-    for (int i = 0; i < SDL_GetNumAudioDrivers(); i++) {
-        const char *driver_name = SDL_GetAudioDriver(i);
-        if (SDL_strcmp(driver_name, "disk") == 0 || SDL_strcmp(driver_name, "dummy") == 0) {
-            // Skip "write-to-disk" and dummy drivers
-            continue;
-        }
-        if (0 == SDL_AudioInit(driver_name) &&
-            0 == Mix_OpenAudio(AUDIO_RATE, AUDIO_FORMAT, AUDIO_CHANNELS, AUDIO_BUFFERS)) {
-            SDL_Log("Using audio driver: %s", driver_name);
-            init_channels();
-            return;
-        } else {
-            SDL_Log("Not using audio driver %s, reason: %s", driver_name, SDL_GetError());
-        }
-    }
-    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Sound failed to initialize: %s", Mix_GetError());
-    int max = SDL_GetNumAudioDevices(0);
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Sound failed to initialize using default driver: %s", SDL_GetError());
+    int max = SDL_GetNumAudioDrivers();
     SDL_Log("Number of audio devices: %d", max);
     for (int i = 0; i < max; i++) {
-        SDL_Log("Audio device: %s", SDL_GetAudioDeviceName(i, 0));
+        SDL_Log("Audio device: %s", SDL_GetAudioDeviceName(i));
     }
 }
 
@@ -130,8 +198,8 @@ static Mix_Chunk *load_chunk(const char *filename)
         if (!fp) {
             return NULL;
         }
-        SDL_RWops *sdl_fp = SDL_RWFromFP(fp, SDL_TRUE);
-        return Mix_LoadWAV_RW(sdl_fp, 1);
+        SDL_IOStream *sdl_fp = SDL_RWFromFP(fp, SDL_TRUE);
+        return Mix_LoadWAV_IO(sdl_fp, 1);
 #else
         return Mix_LoadWAV(filename);
 #endif
@@ -170,13 +238,13 @@ int sound_device_is_channel_playing(int channel)
 
 void sound_device_set_music_volume(int volume_pct)
 {
-    Mix_VolumeMusic(percentage_to_volume(volume_pct));
+    Mix_VolumeMusic(percentage_to_volume(volume_pct) * MIX_MAX_VOLUME);
 }
 
 void sound_device_set_channel_volume(int channel, int volume_pct)
 {
     if (data.channels[channel].chunk) {
-        Mix_VolumeChunk(data.channels[channel].chunk, percentage_to_volume(volume_pct));
+        Mix_VolumeChunk(data.channels[channel].chunk, percentage_to_volume(volume_pct) * MIX_MAX_VOLUME);
     }
 }
 
@@ -215,26 +283,26 @@ int sound_device_play_music(const char *filename, int volume_pct)
         if (!vita_music_data.buffer) {
             return 0;
         }
-        SDL_RWops *sdl_music = SDL_RWFromMem(vita_music_data.buffer, vita_music_data.size);
-        data.music = Mix_LoadMUSType_RW(sdl_music, file_has_extension(filename, "mp3") ? MUS_MP3 : MUS_WAV, SDL_TRUE);
+        SDL_IOStream *sdl_music = SDL_IOFromMem(vita_music_data.buffer, vita_music_data.size);
+        data.music = Mix_LoadMUSType_IO(sdl_music, file_has_extension(filename, "mp3") ? MUS_MP3 : MUS_WAV, true);
 #elif defined(__ANDROID__)
         FILE *fp = file_open(filename, "rb");
         if (!fp) {
             return 0;
         }
-        SDL_RWops *sdl_fp = SDL_RWFromFP(fp, SDL_TRUE);
-        data.music = Mix_LoadMUSType_RW(sdl_fp, file_has_extension(filename, "mp3") ? MUS_MP3 : MUS_WAV, SDL_TRUE);
+        SDL_IOStream *sdl_fp = SDL_RWFromFP(fp, SDL_TRUE);
+        data.music = Mix_LoadMUSType_IO(sdl_fp, file_has_extension(filename, "mp3") ? MUS_MP3 : MUS_WAV, true);
 #else
         data.music = Mix_LoadMUS(filename);
 #endif
         if (!data.music) {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                "Error opening music file '%s'. Reason: %s", filename, Mix_GetError());
+                "Error opening music file '%s'. Reason: %s", filename, SDL_GetError());
         } else {
-            if (Mix_PlayMusic(data.music, -1) == -1) {
+            if (!Mix_PlayMusic(data.music, -1)) {
                 data.music = 0;
                 SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                    "Error playing music file '%s'. Reason: %s", filename, Mix_GetError());
+                    "Error playing music file '%s'. Reason: %s", filename, SDL_GetError());
             } else {
                 sound_device_set_music_volume(volume_pct);
             }
@@ -304,20 +372,10 @@ void sound_device_stop_channel(int channel)
 
 static void free_custom_audio_stream(void)
 {
-#ifdef USE_SDL_AUDIOSTREAM
-    if (custom_music.use_audiostream) {
-        if (custom_music.stream) {
-            SDL_FreeAudioStream(custom_music.stream);
-            custom_music.stream = 0;
-        }
-        return;
-    }
-#endif
-
-    if (custom_music.buffer) {
-        free(custom_music.buffer);
-        custom_music.buffer = 0;
-    }
+  if (custom_music.stream) {
+      SDL_DestroyAudioStream(custom_music.stream);
+      custom_music.stream = 0;
+  }
 }
 
 static int create_custom_audio_stream(SDL_AudioFormat src_format, Uint8 src_channels, int src_rate,
@@ -327,43 +385,23 @@ static int create_custom_audio_stream(SDL_AudioFormat src_format, Uint8 src_chan
 
     custom_music.dst_format = dst_format;
 
-#ifdef USE_SDL_AUDIOSTREAM
-    if (custom_music.use_audiostream) {
-        custom_music.stream = SDL_NewAudioStream(
-            src_format, src_channels, src_rate,
-            dst_format, dst_channels, dst_rate
-        );
-        return custom_music.stream != 0;
-    }
-#endif
-
-    int result = SDL_BuildAudioCVT(
-        &custom_music.cvt, src_format, src_channels, src_rate,
-        dst_format, dst_channels, dst_rate
-    );
-    if (result < 0) {
-        return 0;
-    }
-
-    // Allocate buffer large enough for 2 seconds of 16-bit audio
-    custom_music.buffer_size = dst_rate * dst_channels * 2 * 2;
-    custom_music.buffer = malloc(custom_music.buffer_size);
-    if (!custom_music.buffer) {
-        return 0;
-    }
-    custom_music.cur_read = 0;
-    custom_music.cur_write = 0;
-    return 1;
+    SDL_AudioSpec src_spec = {
+        .freq = src_rate,
+        .format = src_format,
+        .channels = src_channels,
+    };
+    SDL_AudioSpec dst_spec = {
+        .freq = dst_rate,
+        .format = dst_format,
+        .channels = dst_channels,
+    };
+    custom_music.stream = SDL_CreateAudioStream(&src_spec,&dst_spec);
+    return custom_music.stream != 0;
 }
 
 static int custom_audio_stream_active(void)
 {
-#ifdef USE_SDL_AUDIOSTREAM
-    if (custom_music.use_audiostream) {
-        return custom_music.stream != 0;
-    }
-#endif
-    return custom_music.buffer != 0;
+    return custom_music.stream != 0;
 }
 
 static int put_custom_audio_stream(const Uint8 *audio_data, int len)
@@ -372,38 +410,7 @@ static int put_custom_audio_stream(const Uint8 *audio_data, int len)
         return 0;
     }
 
-#ifdef USE_SDL_AUDIOSTREAM
-    if (custom_music.use_audiostream) {
-        return SDL_AudioStreamPut(custom_music.stream, audio_data, len) == 0;
-    }
-#endif
-
-    // Convert audio to SDL format
-    custom_music.cvt.buf = (Uint8 *) malloc((size_t) (len * custom_music.cvt.len_mult));
-    if (!custom_music.cvt.buf) {
-        return 0;
-    }
-    memcpy(custom_music.cvt.buf, audio_data, len);
-    custom_music.cvt.len = len;
-    SDL_ConvertAudio(&custom_music.cvt);
-    int converted_len = custom_music.cvt.len_cvt;
-
-    // Copy data to circular buffer
-    if (converted_len + custom_music.cur_write <= custom_music.buffer_size) {
-        memcpy(&custom_music.buffer[custom_music.cur_write], custom_music.cvt.buf, converted_len);
-    } else {
-        int end_len = custom_music.buffer_size - custom_music.cur_write;
-        memcpy(&custom_music.buffer[custom_music.cur_write], custom_music.cvt.buf, end_len);
-        memcpy(custom_music.buffer, &custom_music.cvt.buf[end_len], converted_len - end_len);
-    }
-    custom_music.cur_write = (custom_music.cur_write + converted_len) % custom_music.buffer_size;
-
-    // Clean up
-    free(custom_music.cvt.buf);
-    custom_music.cvt.buf = 0;
-    custom_music.cvt.len = 0;
-
-    return 1;
+    return SDL_PutAudioStreamData(custom_music.stream, audio_data, len) == 0;
 }
 
 static int get_custom_audio_stream(Uint8 *dst, int len)
@@ -423,38 +430,12 @@ static int get_custom_audio_stream(Uint8 *dst, int len)
     }
     memset(mix_buffer, 0, len);
 
-#ifdef USE_SDL_AUDIOSTREAM
-    if (custom_music.use_audiostream) {
-        bytes_copied = SDL_AudioStreamGet(custom_music.stream, mix_buffer, len);
-        if (bytes_copied <= 0) {
-            return 0;
-        }
-    } else {
-#endif
-        if (custom_music.cur_read < custom_music.cur_write) {
-            int bytes_available = custom_music.cur_write - custom_music.cur_read;
-            int bytes_to_copy = bytes_available < len ? bytes_available : len;
-            memcpy(mix_buffer, &custom_music.buffer[custom_music.cur_read], bytes_to_copy);
-            bytes_copied = bytes_to_copy;
-        } else {
-            int bytes_available = custom_music.buffer_size - custom_music.cur_read;
-            int bytes_to_copy = bytes_available < len ? bytes_available : len;
-            memcpy(mix_buffer, &custom_music.buffer[custom_music.cur_read], bytes_to_copy);
-            bytes_copied = bytes_to_copy;
-            if (bytes_copied < len) {
-                int second_part_len = len - bytes_copied;
-                bytes_available = custom_music.cur_write;
-                bytes_to_copy = bytes_available < second_part_len ? bytes_available : second_part_len;
-                memcpy(&mix_buffer[bytes_copied], custom_music.buffer, bytes_to_copy);
-                bytes_copied += bytes_to_copy;
-            }
-        }
-        custom_music.cur_read = (custom_music.cur_read + bytes_copied) % custom_music.buffer_size;
-#ifdef USE_SDL_AUDIOSTREAM
+    bytes_copied = SDL_GetAudioStreamData(custom_music.stream, mix_buffer, len);
+    if (bytes_copied <= 0) {
+        return 0;
     }
-#endif
 
-    SDL_MixAudioFormat(dst, mix_buffer,
+    SDL_MixAudio(dst, mix_buffer,
         custom_music.dst_format, bytes_copied,
         percentage_to_volume(setting_sound(SOUND_EFFECTS)->volume));
     free(mix_buffer);
@@ -472,15 +453,15 @@ void sound_device_use_custom_music_player(int bitdepth, int num_channels, int ra
 {
     SDL_AudioFormat format;
     if (bitdepth == 8) {
-        format = AUDIO_U8;
+        format = SDL_AUDIO_U8;
     } else if (bitdepth == 16) {
-        format = AUDIO_S16SYS;
+        format = SDL_AUDIO_S16;
     } else {
         log_error("Custom music bitdepth not supported:", 0, bitdepth);
         return;
     }
     int device_rate;
-    Uint16 device_format;
+    SDL_AudioFormat device_format;
     int device_channels;
     Mix_QuerySpec(&device_rate, &device_format, &device_channels);
     custom_music.format = format;

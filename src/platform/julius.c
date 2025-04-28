@@ -1,4 +1,5 @@
-#include "SDL.h"
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_main.h>
 
 #include "core/backtrace.h"
 #include "core/config.h"
@@ -106,7 +107,7 @@ static void setup_logging(void)
     // On some platforms (vita, android), not removing the file will not empty it when reopening for writing
     file_remove("julius-log.txt");
     log_file = file_open("julius-log.txt", "wt");
-    SDL_LogSetOutputFunction(write_log, NULL);
+    SDL_SetLogOutputFunction(write_log, NULL);
 }
 
 static void teardown_logging(void)
@@ -124,7 +125,7 @@ static void teardown_logging(void) {}
 static void post_event(int code)
 {
     SDL_Event event;
-    event.user.type = SDL_USEREVENT;
+    event.user.type = SDL_EVENT_USER;
     event.user.code = code;
     SDL_PushEvent(&event);
 }
@@ -142,7 +143,7 @@ void system_resize(int width, int height)
     s_width = width;
     s_height = height;
     SDL_Event event;
-    event.user.type = SDL_USEREVENT;
+    event.user.type = SDL_EVENT_USER;
     event.user.code = USER_EVENT_RESIZE;
     event.user.data1 = &s_width;
     event.user.data2 = &s_height;
@@ -171,7 +172,7 @@ static void platform_per_frame_callback(void)
 static struct {
     int frame_count;
     int last_fps;
-    Uint32 last_update_time;
+    Uint64 last_update_time;
 } fps;
 
 static void run_and_draw(void)
@@ -180,9 +181,9 @@ static void run_and_draw(void)
     time_set_millis(time_before_run);
 
     game_run();
-    Uint32 time_between_run_and_draw = SDL_GetTicks();
+    Uint64 time_between_run_and_draw = SDL_GetTicks();
     game_draw();
-    Uint32 time_after_draw = SDL_GetTicks();
+    Uint64 time_after_draw = SDL_GetTicks();
 
     fps.frame_count++;
     if (time_after_draw - fps.last_update_time > 1000) {
@@ -218,9 +219,10 @@ static void run_and_draw(void)
 #endif
 
 static void handle_mouse_button(SDL_MouseButtonEvent *event, int is_down)
-{
-    if (!SDL_GetRelativeMouseMode()) {
-        mouse_set_position(event->x, event->y);
+{ 
+    SDL_Window *window = SDL_GetMouseFocus();
+    if (!SDL_GetWindowRelativeMouseMode(window)) {
+        mouse_set_position((int)event->x, (int) event->y);
     }
     if (event->button == SDL_BUTTON_LEFT) {
         mouse_set_left_down(is_down);
@@ -231,39 +233,39 @@ static void handle_mouse_button(SDL_MouseButtonEvent *event, int is_down)
 
 static void handle_window_event(SDL_WindowEvent *event, int *window_active)
 {
-    switch (event->event) {
-        case SDL_WINDOWEVENT_ENTER:
+    switch (event->type) {
+        case SDL_EVENT_WINDOW_MOUSE_ENTER:
             mouse_set_inside_window(1);
             break;
-        case SDL_WINDOWEVENT_LEAVE:
+        case SDL_EVENT_WINDOW_MOUSE_LEAVE:
             mouse_set_inside_window(0);
             break;
-        case SDL_WINDOWEVENT_FOCUS_LOST:
+        case SDL_EVENT_WINDOW_FOCUS_LOST:
             mouse_set_window_focus(0);
             break;
-        case SDL_WINDOWEVENT_FOCUS_GAINED:
+        case SDL_EVENT_WINDOW_FOCUS_GAINED:
             mouse_set_window_focus(1);
             break;
-        case SDL_WINDOWEVENT_SIZE_CHANGED:
+        case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
             SDL_Log("Window resized to %d x %d", (int) event->data1, (int) event->data2);
             platform_screen_resize(event->data1, event->data2);
             break;
-        case SDL_WINDOWEVENT_RESIZED:
+        case SDL_EVENT_WINDOW_RESIZED:
             SDL_Log("System resize to %d x %d", (int) event->data1, (int) event->data2);
             break;
-        case SDL_WINDOWEVENT_MOVED:
+        case SDL_EVENT_WINDOW_MOVED:
             SDL_Log("Window move to coordinates x: %d y: %d\n", (int) event->data1, (int) event->data2);
             platform_screen_move(event->data1, event->data2);
             break;
 
-        case SDL_WINDOWEVENT_SHOWN:
+        case SDL_EVENT_WINDOW_SHOWN:
             SDL_Log("Window %u shown", (unsigned int) event->windowID);
 #ifdef USE_FILE_CACHE
             platform_file_manager_cache_invalidate();
 #endif
             *window_active = 1;
             break;
-        case SDL_WINDOWEVENT_HIDDEN:
+        case SDL_EVENT_WINDOW_HIDDEN:
             SDL_Log("Window %u hidden", (unsigned int) event->windowID);
             *window_active = 0;
             break;
@@ -271,78 +273,85 @@ static void handle_window_event(SDL_WindowEvent *event, int *window_active)
 }
 
 static void handle_event(SDL_Event *event)
-{
+{   
+    platform_screen_event_to_logical_coordinates(event);
+
+    if (SDL_EVENT_WINDOW_FIRST <= event->type && event->type <= SDL_EVENT_WINDOW_LAST) {
+        handle_window_event(&event->window, &data.active);
+        return;
+    }
+    
     switch (event->type) {
-        case SDL_WINDOWEVENT:
-            handle_window_event(&event->window, &data.active);
-            break;
-        case SDL_KEYDOWN:
+        case SDL_EVENT_KEY_DOWN:
             platform_handle_key_down(&event->key);
             break;
-        case SDL_KEYUP:
+        case SDL_EVENT_KEY_UP:
             platform_handle_key_up(&event->key);
             break;
-        case SDL_TEXTINPUT:
+        case SDL_EVENT_TEXT_INPUT:
             platform_handle_text(&event->text);
             break;
-        case SDL_MOUSEMOTION:
-            if (event->motion.which != SDL_TOUCH_MOUSEID && !SDL_GetRelativeMouseMode()) {
-                mouse_set_position(event->motion.x, event->motion.y);
-            }
-            break;
-        case SDL_MOUSEBUTTONDOWN:
+        case SDL_EVENT_MOUSE_MOTION: 
+        {
+          SDL_Window *window = SDL_GetMouseFocus();
+          if (event->motion.which != SDL_TOUCH_MOUSEID && !SDL_GetWindowRelativeMouseMode(window)) {
+            mouse_set_position((int) event->motion.x, (int) event->motion.y);
+          }
+          break;
+        }
+        case SDL_EVENT_MOUSE_BUTTON_DOWN:
             if (event->button.which != SDL_TOUCH_MOUSEID) {
                 handle_mouse_button(&event->button, 1);
             }
             break;
-        case SDL_MOUSEBUTTONUP:
+        case SDL_EVENT_MOUSE_BUTTON_UP:
             if (event->button.which != SDL_TOUCH_MOUSEID) {
                 handle_mouse_button(&event->button, 0);
             }
             break;
-        case SDL_MOUSEWHEEL:
+        case SDL_EVENT_MOUSE_WHEEL:
             if (event->wheel.which != SDL_TOUCH_MOUSEID) {
                 mouse_set_scroll(event->wheel.y > 0 ? SCROLL_UP : event->wheel.y < 0 ? SCROLL_DOWN : SCROLL_NONE);
             }
             break;
 
-        case SDL_FINGERDOWN:
+        case SDL_EVENT_FINGER_DOWN:
             platform_touch_start(&event->tfinger);
             break;
-        case SDL_FINGERMOTION:
+        case SDL_EVENT_FINGER_MOTION:
             platform_touch_move(&event->tfinger);
             break;
-        case SDL_FINGERUP:
+        case SDL_EVENT_FINGER_UP:
             platform_touch_end(&event->tfinger);
             break;
 
-        case SDL_JOYAXISMOTION:
+        case SDL_EVENT_JOYSTICK_AXIS_MOTION:
             platform_joystick_handle_axis(&event->jaxis);
             break;
-        case SDL_JOYBALLMOTION:
+        case SDL_EVENT_JOYSTICK_BALL_MOTION:
             platform_joystick_handle_trackball(&event->jball);
             break;
-        case SDL_JOYHATMOTION:
+        case SDL_EVENT_JOYSTICK_HAT_MOTION:
             platform_joystick_handle_hat(&event->jhat);
             break;
-        case SDL_JOYBUTTONDOWN:
+        case SDL_EVENT_JOYSTICK_BUTTON_DOWN:
             platform_joystick_handle_button(&event->jbutton, 1);
             break;
-        case SDL_JOYBUTTONUP:
+        case SDL_EVENT_JOYSTICK_BUTTON_UP:
             platform_joystick_handle_button(&event->jbutton, 0);
             break;
-        case SDL_JOYDEVICEADDED:
+        case SDL_EVENT_JOYSTICK_ADDED:
             platform_joystick_device_changed(event->jdevice.which, 1);
             break;
-        case SDL_JOYDEVICEREMOVED:
+        case SDL_EVENT_JOYSTICK_REMOVED:
             platform_joystick_device_changed(event->jdevice.which, 0);
             break;
 
-        case SDL_QUIT:
+        case SDL_EVENT_QUIT:
             data.quit = 1;
             break;
 
-        case SDL_USEREVENT:
+        case SDL_EVENT_USER:
             if (event->user.code == USER_EVENT_QUIT) {
                 data.quit = 1;
             } else if (event->user.code == USER_EVENT_RESIZE) {
@@ -408,22 +417,13 @@ static int init_sdl(void)
 {
     SDL_Log("Initializing SDL");
 
-    // This hint must be set before initializing SDL, otherwise it won't work
-#if SDL_VERSION_ATLEAST(2, 0, 2)
-    SDL_SetHint(SDL_HINT_ACCELEROMETER_AS_JOYSTICK, "0");
-#endif
-
-    if (SDL_Init(SDL_INIT_AUDIO | SDL_INIT_VIDEO | SDL_INIT_JOYSTICK) != 0) {
+    if (!SDL_Init(SDL_INIT_AUDIO | SDL_INIT_VIDEO | SDL_INIT_JOYSTICK)) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Could not initialize SDL: %s", SDL_GetError());
         return 0;
     }
     platform_joystick_init();
-#if SDL_VERSION_ATLEAST(2, 0, 10)
     SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "0");
     SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
-#elif SDL_VERSION_ATLEAST(2, 0, 4)
-    SDL_SetHint(SDL_HINT_ANDROID_SEPARATE_MOUSE_AND_TOUCH, "1");
-#endif
 #ifdef __ANDROID__
     SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1");
 #endif
@@ -512,29 +512,22 @@ static int pre_init(const char *custom_data_dir)
         return 1;
     }
 
-#if SDL_VERSION_ATLEAST(2, 0, 1)
-    if (platform_sdl_version_at_least(2, 0, 1)) {
 #ifdef __IPHONEOS__
-        char *base_path = ios_get_base_path();
+    char *base_path = ios_get_base_path();
 #else
-        char *base_path = SDL_GetBasePath();
+    const char *base_path = SDL_GetBasePath();
 #endif
-        if (base_path) {
-            if (platform_file_manager_set_base_path(base_path)) {
-                SDL_Log("Loading game from base path %s", base_path);
-                if (game_pre_init()) {
-#ifndef __IPHONEOS__
-                    SDL_free(base_path);
-#endif
-                    return 1;
-                }
+    if (base_path) {
+        if (platform_file_manager_set_base_path(base_path)) {
+            SDL_Log("Loading game from base path %s", base_path);
+            if (game_pre_init()) {
+                return 1;
             }
-#ifndef __IPHONEOS__
-            SDL_free(base_path);
-#endif
         }
-    }
+#ifdef __IPHONEOS__
+        free(base_path);
 #endif
+    }
 
 #ifdef SHOW_FOLDER_SELECT_DIALOG
     const char *user_dir = pref_data_dir();
@@ -551,7 +544,7 @@ static int pre_init(const char *custom_data_dir)
         if (platform_file_manager_set_base_path(user_dir) && game_pre_init()) {
             pref_save_data_dir(user_dir);
 #ifdef __ANDROID__
-            SDL_AndroidShowToast("C3 files found. Path saved.", 0, 0, 0, 0);
+            SDL_ShowAndroidToast("C3 files found. Path saved.", 0, 0, 0, 0);
 #endif
             return 1;
         }

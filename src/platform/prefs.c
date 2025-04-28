@@ -2,7 +2,7 @@
 
 #include "platform/platform.h"
 
-#include "SDL.h"
+#include <SDL3/SDL.h>
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -10,28 +10,23 @@
 
 static FILE *open_pref_file(const char *filename, const char *mode)
 {
-    #if SDL_VERSION_ATLEAST(2, 0, 1)
-    if (platform_sdl_version_at_least(2, 0, 1)) {
-        char *pref_dir = SDL_GetPrefPath("bvschaik", "julius");
-        if (!pref_dir) {
-            return NULL;
-        }
-        size_t dir_len = strlen(pref_dir);
-        char *pref_file = malloc((strlen(filename) + dir_len + 2) * sizeof(char));
-        if (!pref_file) {
-            SDL_free(pref_dir);
-            return NULL;
-        }
-        strcpy(pref_file, pref_dir);
-        strcpy(&pref_file[dir_len], filename);
-        SDL_free(pref_dir);
-
-        FILE *fp = fopen(pref_file, mode);
-        free(pref_file);
-        return fp;
+    char *pref_dir = SDL_GetPrefPath("bvschaik", "julius");
+    if (!pref_dir) {
+        return NULL;
     }
-    #endif
-    return NULL;
+    size_t dir_len = strlen(pref_dir);
+    char *pref_file = malloc((strlen(filename) + dir_len + 2) * sizeof(char));
+    if (!pref_file) {
+        SDL_free(pref_dir);
+        return NULL;
+    }
+    strcpy(pref_file, pref_dir);
+    strcpy(&pref_file[dir_len], filename);
+    SDL_free(pref_dir);
+
+    FILE *fp = fopen(pref_file, mode);
+    free(pref_file);
+    return fp;
 }
 
 const char *pref_data_dir(void)

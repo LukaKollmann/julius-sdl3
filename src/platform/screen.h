@@ -4,6 +4,8 @@
 #include "graphics/color.h"
 #include "input/cursor.h"
 
+#include <SDL3/SDL.h>
+
 int platform_screen_create(const char *title, int dispay_scale_percentage, int display_id);
 void platform_screen_destroy(void);
 
@@ -11,6 +13,7 @@ int platform_screen_resize(int pixel_width, int pixel_height);
 void platform_screen_move(int x, int y);
 
 int platform_screen_get_scale(void);
+void platform_screen_event_to_logical_coordinates(SDL_Event *event);
 
 void platform_screen_set_fullscreen(void);
 void platform_screen_set_windowed(void);

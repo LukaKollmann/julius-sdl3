@@ -128,18 +128,18 @@ static void create_new_model(const char *guid, const char *name, int instance_id
 
 static void add_joystick(int index)
 {
-    SDL_Joystick *joystick = SDL_JoystickOpen(index);
-    int instance_id = SDL_JoystickInstanceID(joystick);
+    SDL_Joystick *joystick = SDL_OpenJoystick(index);
+    int instance_id = SDL_GetJoystickID(joystick);
     if (joystick_is_active(instance_id)) {
         return;
     }
     static char guid[JOYSTICK_MAX_GUID];
-    SDL_JoystickGetGUIDString(SDL_JoystickGetGUID(joystick), guid, JOYSTICK_MAX_GUID);
+    SDL_GUIDToString(SDL_GetJoystickGUID(joystick), guid, JOYSTICK_MAX_GUID);
     if (!joystick_has_model(guid)) {
-        create_new_model(guid, SDL_JoystickName(joystick), instance_id);
+        create_new_model(guid, SDL_GetJoystickName(joystick), instance_id);
     }
     if (!joystick_add(instance_id, guid)) {
-        SDL_JoystickClose(joystick);
+        SDL_CloseJoystick(joystick);
     }
 }
 
@@ -148,24 +148,9 @@ static void remove_joystick(int instance_id)
     if (!joystick_is_active(instance_id)) {
         return;
     }
-    SDL_Joystick *joystick = 0;
-#if SDL_VERSION_ATLEAST(2, 0, 4)
-    if (platform_sdl_version_at_least(2, 0, 4)) {
-        joystick = SDL_JoystickFromInstanceID(instance_id);
-    } else {
-#endif
-        for (int i = 0; i < SDL_NumJoysticks(); ++i) {
-            SDL_Joystick *current_joystick = SDL_JoystickOpen(i);
-            if (SDL_JoystickInstanceID(current_joystick) == instance_id) {
-                joystick = current_joystick;
-                break;
-            }
-        }
-#if SDL_VERSION_ATLEAST(2, 0, 4)
-    }
-#endif
+    SDL_Joystick *joystick = SDL_GetJoystickFromID(instance_id);
     if (joystick) {
-        SDL_JoystickClose(joystick);
+        SDL_CloseJoystick(joystick);
     }
     joystick_remove(instance_id);
 }
@@ -175,10 +160,13 @@ void platform_joystick_init(void)
     if (!use_joystick()) {
         return;
     }
-    if (SDL_JoystickEventState(SDL_ENABLE) != SDL_ENABLE) {
+    SDL_SetJoystickEventsEnabled(true);
+    if (SDL_JoystickEventsEnabled()) {
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Joystick events could not be enabled: %s", SDL_GetError());
     }
-    for (int i = 0; i < SDL_NumJoysticks(); ++i) {
+    int joystick_count;
+    SDL_GetJoysticks(&joystick_count);
+    for (int i = 0; i < joystick_count; ++i) {
         add_joystick(i);
     }
 }

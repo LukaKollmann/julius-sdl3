@@ -12,8 +12,6 @@
 #include "platform/switch/switch.h"
 #include "platform/vita/vita.h"
 
-#include "SDL.h"
-
 #include <stdlib.h>
 
 static struct {
@@ -83,18 +81,17 @@ static void set_scale_percentage(int new_scale, int pixel_width, int pixel_heigh
 
     apply_max_scale(pixel_width, pixel_height);
 
-    SDL_SetWindowMinimumSize(SDL.window,
-        scale_logical_to_pixels(MINIMUM.WIDTH), scale_logical_to_pixels(MINIMUM.HEIGHT));
+    SDL_SetWindowMinimumSize(SDL.window,scale_logical_to_pixels(MINIMUM.WIDTH), scale_logical_to_pixels(MINIMUM.HEIGHT));
 
-    const char *scale_quality = "linear";
+    SDL_ScaleMode scale_mode = SDL_SCALEMODE_LINEAR;
 #if !defined(__APPLE__) && !defined(__ANDROID__)
     // Scale using nearest neighbour when we scale a multiple of 100%: makes it look sharper.
     // But not on MacOS: users are used to the linear interpolation since that's what Apple also does.
     if (scale.percentage % 100 == 0) {
-        scale_quality = "nearest";
+        scale_mode = SDL_SCALEMODE_NEAREST;
     }
 #endif
-    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, scale_quality);
+    SDL_SetTextureScaleMode(SDL.texture, scale_mode);
 }
 
 int platform_screen_create(const char *title, int display_scale_percentage, int display_id)
@@ -107,10 +104,10 @@ int platform_screen_create(const char *title, int display_scale_percentage, int 
     int width, height;
     int fullscreen = system_is_fullscreen_only() ? 1 : setting_fullscreen();
     if (fullscreen) {
-        SDL_DisplayMode mode;
-        SDL_GetDesktopDisplayMode(0, &mode);
-        width = mode.w;
-        height = mode.h;
+        SDL_DisplayID display = SDL_GetPrimaryDisplay();
+        const SDL_DisplayMode* mode = SDL_GetCurrentDisplayMode(display);
+        width = mode->w;
+        height = mode->h;
     } else {
         setting_window(&width, &height);
         width = scale_logical_to_pixels(width);
@@ -125,26 +122,23 @@ int platform_screen_create(const char *title, int display_scale_percentage, int 
     SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 6);
     SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 5);
 #endif
-
-    if (display_id < 0 || display_id >= SDL_GetNumVideoDisplays()) {
-        SDL_Log("Defaulting to display 0 instead of %d (num displays: %d)", display_id, SDL_GetNumVideoDisplays());
+    int display_count;
+    SDL_GetDisplays(&display_count);
+    if (display_id < 0 || display_id >= display_count) {
+        SDL_Log("Defaulting to display 0 instead of %d (num displays: %d)", display_id, display_count);
         display_id = 0;
     }
     SDL_Log("Creating screen %d x %d on display %d, %s, driver: %s", width, height, display_id,
         fullscreen ? "fullscreen" : "windowed", SDL_GetCurrentVideoDriver());
     Uint32 flags = SDL_WINDOW_RESIZABLE;
 
-#if SDL_VERSION_ATLEAST(2, 0, 1)
-    flags |= SDL_WINDOW_ALLOW_HIGHDPI;
-#endif
+    flags |= SDL_WINDOW_HIGH_PIXEL_DENSITY;
 
+    SDL.window = SDL_CreateWindow(title,width,height,flags);
     if (fullscreen) {
-        flags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
+      SDL_SetWindowFullscreen(SDL.window, true);
     }
-    SDL.window = SDL_CreateWindow(title,
-        SDL_WINDOWPOS_CENTERED_DISPLAY(display_id), SDL_WINDOWPOS_CENTERED_DISPLAY(display_id),
-        width, height, flags);
-
+    
     if (!SDL.window) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Unable to create window: %s", SDL_GetError());
         return 0;
@@ -155,10 +149,10 @@ int platform_screen_create(const char *title, int display_scale_percentage, int 
     }
 
     SDL_Log("Creating renderer");
-    SDL.renderer = SDL_CreateRenderer(SDL.window, -1, SDL_RENDERER_PRESENTVSYNC);
+    SDL.renderer = SDL_CreateRenderer(SDL.window, NULL);
     if (!SDL.renderer) {
         SDL_Log("Unable to create renderer, trying software renderer: %s", SDL_GetError());
-        SDL.renderer = SDL_CreateRenderer(SDL.window, -1, SDL_RENDERER_SOFTWARE);
+        SDL.renderer = SDL_CreateRenderer(SDL.window, "software");
         if (!SDL.renderer) {
             SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Unable to create renderer: %s", SDL_GetError());
             return 0;
@@ -166,7 +160,8 @@ int platform_screen_create(const char *title, int display_scale_percentage, int 
     }
 
     if (fullscreen) {
-        SDL_SetWindowGrab(SDL.window, SDL_TRUE);
+        SDL_SetWindowMouseGrab(SDL.window, true);
+        SDL_SetWindowKeyboardGrab(SDL.window, true);
     }
 
     set_scale_percentage(display_scale_percentage, width, height);
@@ -208,7 +203,7 @@ int platform_screen_resize(int pixel_width, int pixel_height)
         destroy_screen_texture();
     }
 
-    SDL_RenderSetLogicalSize(SDL.renderer, logical_width, logical_height);
+    SDL_SetRenderLogicalPresentation(SDL.renderer, logical_width, logical_height, SDL_LOGICAL_PRESENTATION_LETTERBOX);
 
     setting_set_display(setting_fullscreen(), logical_width, logical_height);
     SDL.texture = SDL_CreateTexture(SDL.renderer,
@@ -218,6 +213,7 @@ int platform_screen_resize(int pixel_width, int pixel_height)
     if (SDL.texture) {
         SDL_Log("Texture created: %d x %d", logical_width, logical_height);
         screen_set_resolution(logical_width, logical_height);
+        SDL_SetTextureBlendMode(SDL.texture, SDL_BLENDMODE_NONE);
         return 1;
     } else {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Unable to create texture: %s", SDL_GetError());
@@ -275,21 +271,26 @@ int platform_screen_get_scale(void)
     return scale.percentage;
 }
 
+void platform_screen_event_to_logical_coordinates(SDL_Event *event)
+{
+    SDL_ConvertEventToRenderCoordinates(SDL.renderer, event);
+}
+
 void platform_screen_set_fullscreen(void)
 {
     SDL_GetWindowPosition(SDL.window, &window_pos.x, &window_pos.y);
-    int display = SDL_GetWindowDisplayIndex(SDL.window);
-    SDL_DisplayMode mode;
-    SDL_GetDesktopDisplayMode(display, &mode);
-    SDL_Log("User to fullscreen %d x %d on display %d", mode.w, mode.h, display);
-    if (0 != SDL_SetWindowFullscreen(SDL.window, SDL_WINDOW_FULLSCREEN_DESKTOP)) {
+    int display = SDL_GetDisplayForWindow(SDL.window);
+    const SDL_DisplayMode* mode = SDL_GetDesktopDisplayMode(display);
+    SDL_Log("User to fullscreen %d x %d on display %d", mode->w, mode->h, display);
+    if (!SDL_SetWindowFullscreen(SDL.window, true)) {
         SDL_Log("Unable to enter fullscreen: %s", SDL_GetError());
         return;
     }
-    SDL_SetWindowDisplayMode(SDL.window, &mode);
+    SDL_SetWindowFullscreenMode(SDL.window, mode);
 
-    SDL_SetWindowGrab(SDL.window, SDL_TRUE);
-    setting_set_display(1, mode.w, mode.h);
+    SDL_SetWindowMouseGrab(SDL.window, true);
+    SDL_SetWindowKeyboardGrab(SDL.window, true);
+    setting_set_display(1, mode->w, mode->h);
 }
 
 void platform_screen_set_windowed(void)
@@ -301,15 +302,16 @@ void platform_screen_set_windowed(void)
     setting_window(&logical_width, &logical_height);
     int pixel_width = scale_logical_to_pixels(logical_width);
     int pixel_height = scale_logical_to_pixels(logical_height);
-    int display = SDL_GetWindowDisplayIndex(SDL.window);
+    int display = SDL_GetDisplayForWindow(SDL.window);
     SDL_Log("User to windowed %d x %d on display %d", pixel_width, pixel_height, display);
-    SDL_SetWindowFullscreen(SDL.window, 0);
+    SDL_SetWindowFullscreen(SDL.window, false);
     SDL_SetWindowSize(SDL.window, pixel_width, pixel_height);
     if (window_pos.centered) {
         platform_screen_center_window();
     }
-    if (SDL_GetWindowGrab(SDL.window) == SDL_TRUE) {
-        SDL_SetWindowGrab(SDL.window, SDL_FALSE);
+    if (SDL_GetWindowMouseGrab(SDL.window) && SDL_GetWindowKeyboardGrab(SDL.window)) {
+        SDL_SetWindowMouseGrab(SDL.window, false);
+        SDL_SetWindowKeyboardGrab(SDL.window, false);
     }
     setting_set_display(0, pixel_width, pixel_height);
 }
@@ -321,7 +323,7 @@ void platform_screen_set_window_size(int logical_width, int logical_height)
     }
     int pixel_width = scale_logical_to_pixels(logical_width);
     int pixel_height = scale_logical_to_pixels(logical_height);
-    int display = SDL_GetWindowDisplayIndex(SDL.window);
+    int display = SDL_GetDisplayForWindow(SDL.window);
     if (setting_fullscreen()) {
         SDL_SetWindowFullscreen(SDL.window, 0);
     } else {
@@ -335,15 +337,16 @@ void platform_screen_set_window_size(int logical_width, int logical_height)
         platform_screen_center_window();
     }
     SDL_Log("User resize to %d x %d on display %d", pixel_width, pixel_height, display);
-    if (SDL_GetWindowGrab(SDL.window) == SDL_TRUE) {
-        SDL_SetWindowGrab(SDL.window, SDL_FALSE);
+    if (SDL_GetWindowMouseGrab(SDL.window) && SDL_GetWindowKeyboardGrab(SDL.window)) {
+        SDL_SetWindowMouseGrab(SDL.window, false);
+        SDL_SetWindowKeyboardGrab(SDL.window, false);
     }
     setting_set_display(0, pixel_width, pixel_height);
 }
 
 void platform_screen_center_window(void)
 {
-    int display = SDL_GetWindowDisplayIndex(SDL.window);
+    int display = SDL_GetDisplayForWindow(SDL.window);
     SDL_SetWindowPosition(SDL.window,
         SDL_WINDOWPOS_CENTERED_DISPLAY(display), SDL_WINDOWPOS_CENTERED_DISPLAY(display));
     window_pos.centered = 1;
@@ -364,7 +367,7 @@ static void draw_software_mouse_cursor(void)
             dst.y = mouse->y - c->hotspot_y;
             dst.w = size;
             dst.h = size;
-            SDL_RenderCopy(SDL.renderer, SDL.cursors[current_cursor_shape], NULL, &dst);
+            SDL_RenderTexture(SDL.renderer, SDL.cursors[current_cursor_shape], NULL, &dst);
         }
     }
 }
@@ -377,12 +380,12 @@ void platform_screen_recreate_texture(void)
     // after restoring the window, preventing the texture from being recreated. This forces an attempt to recreate the
     // texture every frame to bypass that issue.
     if (!SDL.texture && SDL.renderer && setting_fullscreen()) {
-        SDL_DisplayMode mode;
-        SDL_GetWindowDisplayMode(SDL.window, &mode);
-        screen_set_resolution(scale_pixels_to_logical(mode.w), scale_pixels_to_logical(mode.h));
+        const SDL_DisplayMode* mode = SDL_GetWindowFullscreenMode(SDL.window);
+        screen_set_resolution(scale_pixels_to_logical(mode->w), scale_pixels_to_logical(mode->h));
         SDL.texture = SDL_CreateTexture(SDL.renderer,
             SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
             screen_width(), screen_height());
+        SDL_SetTextureBlendMode(SDL.texture, SDL_BLENDMODE_NONE);
     }
 }
 #endif
@@ -398,7 +401,7 @@ void platform_screen_update(void)
 #ifndef __vita__
     SDL_UpdateTexture(SDL.texture, NULL, graphics_canvas(), screen_width() * 4);
 #endif
-    SDL_RenderCopy(SDL.renderer, SDL.texture, NULL, NULL);
+    SDL_RenderTexture(SDL.renderer, SDL.texture, NULL, NULL);
 #ifdef PLATFORM_USE_SOFTWARE_CURSOR
     draw_software_mouse_cursor();
 #endif
@@ -431,7 +434,9 @@ void system_set_mouse_position(int *x, int *y)
 {
     *x = calc_bound(*x, 0, screen_width() - 1);
     *y = calc_bound(*y, 0, screen_height() - 1);
-    SDL_WarpMouseInWindow(SDL.window, scale_logical_to_pixels(*x), scale_logical_to_pixels(*y));
+    float fx = (float) scale_logical_to_pixels(*x);
+    float fy = (float) scale_logical_to_pixels(*y);
+    SDL_WarpMouseInWindow(SDL.window, fx, fy);
 }
 
 int system_is_fullscreen_only(void)

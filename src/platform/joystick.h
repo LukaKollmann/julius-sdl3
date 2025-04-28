@@ -1,7 +1,7 @@
 #ifndef PLATFORM_JOYSTICK_H
 #define PLATFORM_JOYSTICK_H
 
-#include "SDL.h"
+#include <SDL3/SDL.h>
 
 void platform_joystick_init(void);
 void platform_joystick_device_changed(int id, int is_connected);

@@ -34,7 +34,10 @@ void platform_touch_start(SDL_TouchFingerEvent *event)
 #ifdef __APPLE__
     // Attempt to disable trackpad touches on MacOS
     if (!trackpad_id) {
-        trackpad_id = SDL_GetTouchDevice(0);
+        int count;
+        SDL_TouchId *ids = SDL_GetTouchDevices(&count);
+        trackpad_id = ids[0];
+        SDL_Free(ids);
     }
     if (event->touchId == trackpad_id) {
         return;
@@ -47,16 +50,16 @@ void platform_touch_start(SDL_TouchFingerEvent *event)
 #endif
     int index = touch_create(get_touch_coordinates(event->x, event->y), event->timestamp);
     if (index != MAX_ACTIVE_TOUCHES) {
-        touch_id[index] = event->fingerId;
+        touch_id[index] = event->fingerID;
     }
 }
 
 void platform_touch_move(SDL_TouchFingerEvent *event)
 {
-    touch_move(get_touch_index(event->fingerId), get_touch_coordinates(event->x, event->y), event->timestamp);
+    touch_move(get_touch_index(event->fingerID), get_touch_coordinates(event->x, event->y), event->timestamp);
 }
 
 void platform_touch_end(SDL_TouchFingerEvent *event)
 {
-    touch_end(get_touch_index(event->fingerId), event->timestamp);
+    touch_end(get_touch_index(event->fingerID), event->timestamp);
 }

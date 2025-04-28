@@ -1,7 +1,7 @@
 #ifndef PLATFORM_IOS_H
 #define PLATFORM_IOS_H
 
-#include "SDL_platform.h"
+#include <SDL3/SDL_platform.h>
 
 #ifdef __IPHONEOS__
 

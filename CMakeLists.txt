@@ -36,19 +36,19 @@ if(${TARGET_PLATFORM} STREQUAL "ios")
 
     set(SYSTEM_LIBS OFF)
 
-    # Build SDL2 as static library
+    # Build SDL3 as static library
     set(SDL_SHARED_ENABLED_BY_DEFAULT OFF)
     set(SDL_SHARED OFF)
     set(SDL_STATIC ON)
 
-    # Build SDL2_mixer as static library
+    # Build SDL3_mixer as static library
     set(BUILD_SHARED_LIBS OFF)
 
     # Disable stuff that breaks the build and we don't need.
-    set(SDL2MIXER_WAVPACK OFF) 
-    set(SDL2MIXER_OPUS OFF) 
-    set(SDL2MIXER_MIDI OFF) 
-    set(SDL2MIXER_MOD OFF) 
+    set(SDLMIXER_WAVPACK OFF) 
+    set(SDLMIXER_OPUS OFF) 
+    set(SDLMIXER_MIDI OFF) 
+    set(SDLMIXER_MOD OFF) 
 
     # Explicitly set SDKROOT (called Base SDK in Xcode), otherwise it is set incorrectly.
     set(CMAKE_XCODE_ATTRIBUTE_SDKROOT iphoneos)
@@ -57,6 +57,11 @@ if(${TARGET_PLATFORM} STREQUAL "ios")
     set(CMAKE_XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "1,2")
 endif()
 
+if(NOT SYSTEM_LIBS) 
+    # Copies SDL dynamic libaries to build folder
+    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIGURATION>")
+    set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIGURATION>")
+endif()
 
 set(SHORT_NAME julius)
 set(USER_FRIENDLY_NAME Julius)
@@ -659,53 +664,26 @@ set(SOURCE_FILES
     ${EMSCRIPTEN_FILES}
 )
 
-function(GET_SDL_EXT_DIR result module)
-    if(NOT module STREQUAL "")
-        set(module "_${module}")
-    endif()
-    set(SDL_LOCATION ${PROJECT_SOURCE_DIR}/ext/SDL2)
-    file(GLOB children
-        RELATIVE ${SDL_LOCATION}
-        CONFIGURE_DEPENDS
-        ${SDL_LOCATION}/SDL${module}
-        ${SDL_LOCATION}/SDL2${module}
-        ${SDL_LOCATION}/SDL${module}-*
-        ${SDL_LOCATION}/SDL2${module}-*
-    )
-    foreach(child ${children})
-        if(IS_DIRECTORY "${SDL_LOCATION}/${child}")
-            set(${result} "${SDL_LOCATION}/${child}" PARENT_SCOPE)
-            break()
-        endif()
-    endforeach()
-endfunction()
-
 if(${TARGET_PLATFORM} STREQUAL "emscripten")
-    set(USE_FLAGS "-s USE_SDL=2 -s USE_SDL_MIXER=2 -s SDL2_MIXER_FORMATS=[\"mp3\"] -s USE_MPG123=1")
+    set(USE_FLAGS "-s USE_SDL=3 -s USE_SDL_MIXER=3 -s SDL3_MIXER_FORMATS=[\"mp3\"] -s USE_MPG123=1")
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${USE_FLAGS}")
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${USE_FLAGS}")
-
-elseif(${TARGET_PLATFORM} STREQUAL "ios")
-    GET_SDL_EXT_DIR(SDL_EXT_DIR "")
-    add_subdirectory(${SDL_EXT_DIR})
-    find_library(SDL2 NAMES SDL2-static SDL2main)
-    list(APPEND SDL2_LIBRARY
-        # We don't need to add SDL2-static here because SDL2_mixer will include it
-        SDL2main
+elseif(NOT SYSTEM_LIBS) 
+    add_subdirectory(ext/SDL3/SDL)
+    list(APPEND SDL3_LIBRARY
+        SDL3::SDL3
     )
-    GET_SDL_EXT_DIR(SDL_MIXER_EXT_DIR "mixer")
-    add_subdirectory(${SDL_MIXER_EXT_DIR})
-    find_library(SDL2_mixer NAMES SDL2_mixer-static)
-    list(APPEND SDL2_MIXER_LIBRARY
-        SDL2_mixer
+    add_subdirectory(ext/SDL3/SDL_mixer)
+    list(APPEND SDL3_MIXER_LIBRARY
+        SDL3_mixer::SDL3_mixer
     )
 else()
-    find_package(SDL2 REQUIRED)
-    find_package(SDL2_mixer REQUIRED)
+    find_package(SDL3 REQUIRED)
+    find_package(SDL3_mixer REQUIRED)
 endif()
 
 if(${TARGET_PLATFORM} STREQUAL "android")
-    add_library(${SHORT_NAME} SHARED ${SDL2_ANDROID_HOOK} ${SOURCE_FILES})
+    add_library(${SHORT_NAME} SHARED ${SDL3_ANDROID_HOOK} ${SOURCE_FILES})
 elseif(${TARGET_PLATFORM} STREQUAL "ios")
     add_executable(${SHORT_NAME} MACOSX_BUNDLE ${SOURCE_FILES})
 else()
@@ -757,19 +735,19 @@ if(APPLE AND NOT ${TARGET_PLATFORM} STREQUAL "ios")
     set(DIRS "")
     set(LIBS "")
 
-    # if SDL2 library is a framework, we need to indicate to CMake
-    # the path to its dependencies. SDL2_LIBRARY contains two parts.
-    # Example: /Library/Frameworks/SDL2.framework;-framework Cocoa
+    # if SDL3 library is a framework, we need to indicate to CMake
+    # the path to its dependencies. SDL3_LIBRARY contains two parts.
+    # Example: /Library/Frameworks/SDL3.framework;-framework Cocoa
     # So strip out everything after the ';'
-    string(REGEX REPLACE ";.*$" "" SDL2_LIB_DIR "${SDL2_LIBRARY}")
-    if(EXISTS "${SDL2_LIB_DIR}/Versions/A/Frameworks")
-        list(APPEND DIRS "${SDL2_LIB_DIR}/Versions/A/Frameworks")
+    string(REGEX REPLACE ";.*$" "" SDL3_LIB_DIR "${SDL3_LIBRARY}")
+    if(EXISTS "${SDL3_LIB_DIR}/Versions/A/Frameworks")
+        list(APPEND DIRS "${SDL3_LIB_DIR}/Versions/A/Frameworks")
     endif()
 
-    # if SDL2_mixer library is a framework, we need to indicate to CMake
+    # if SDL3_mixer library is a framework, we need to indicate to CMake
     # the path to its dependencies (Ogg.framework etc):
-    if(EXISTS "${SDL2_MIXER_LIBRARY}/Versions/A/Frameworks")
-        list(APPEND DIRS "${SDL2_MIXER_LIBRARY}/Versions/A/Frameworks")
+    if(EXISTS "${SDL3_MIXER_LIBRARY}/Versions/A/Frameworks")
+        list(APPEND DIRS "${SDL3_MIXER_LIBRARY}/Versions/A/Frameworks")
     endif()
 
     # when installing, "fixup" automatically copies libraries inside the
@@ -809,11 +787,11 @@ if(${TARGET_PLATFORM} STREQUAL "ios")
         MACOSX_PACKAGE_LOCATION Resources)
 endif()
 
-if(SDL2_INCLUDE_DIR)
-    include_directories(SYSTEM ${SDL2_INCLUDE_DIR})
+if(SDL3_INCLUDE_DIR)
+    include_directories(SYSTEM ${SDL3_INCLUDE_DIR})
 endif()
-if(SDL2_MIXER_INCLUDE_DIR)
-    include_directories(SYSTEM ${SDL2_MIXER_INCLUDE_DIR})
+if(SDL3_MIXER_INCLUDE_DIR)
+    include_directories(SYSTEM ${SDL3_MIXER_INCLUDE_DIR})
 endif()
 
 if(SYSTEM_LIBS)
@@ -846,8 +824,8 @@ endif()
 
 if (${TARGET_PLATFORM} STREQUAL "vita")
     target_link_libraries (${SHORT_NAME}
-        ${SDL2_MIXER_LIBRARY}
-        ${SDL2_LIBRARY}
+        ${SDL3_MIXER_LIBRARY}
+        ${SDL3_LIBRARY}
         vorbisfile
         vorbis
         mikmod
@@ -892,8 +870,8 @@ if (${TARGET_PLATFORM} STREQUAL "vita")
     )
 elseif(NINTENDO_SWITCH)
 
-    pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2 SDL2_mixer)
-    target_link_libraries(${SHORT_NAME} PkgConfig::SDL2)
+    pkg_check_modules(SDL3 REQUIRED IMPORTED_TARGET SDL3 SDL3_mixer)
+    target_link_libraries(${SHORT_NAME} PkgConfig::SDL3)
 
 nx_generate_nacp (${PROJECT_NAME}.nacp
     NAME   "Julius"
@@ -916,7 +894,7 @@ else()
 
     if(${TARGET_PLATFORM} STREQUAL "ios")
         set(CMAKE_CXX_FLAGS "${CMAKE_C_FLAGS} -DUSE_SDL_MAIN")
-        # Add SDL2 and SDL_Mixer headers, or they won't be found
+        # Add SDL3 and SDL_Mixer headers, or they won't be found
         target_include_directories(${SHORT_NAME} PRIVATE "${SDL_EXT_DIR}/include")
         target_include_directories(${SHORT_NAME} PRIVATE "${SDL_MIXER_EXT_DIR}/include")
 
@@ -929,7 +907,7 @@ else()
         )
     endif()
 
-    target_link_libraries(${SHORT_NAME} ${SDL2_LIBRARY} ${SDL2_MIXER_LIBRARY})
+    target_link_libraries(${SHORT_NAME} ${SDL3_LIBRARY} ${SDL3_MIXER_LIBRARY})
     if(NOT APPLE AND NOT ${TARGET_PLATFORM} STREQUAL "android")
         install(TARGETS ${SHORT_NAME} RUNTIME DESTINATION bin)
     endif()

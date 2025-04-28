@@ -2,7 +2,7 @@
 
 #include "platform/file_manager.h"
 
-#include "SDL.h"
+#include <SDL3/SDL.h>
 
 #include <jni.h>
 #include <string.h>
@@ -23,7 +23,7 @@ static char path[GAME_PATH_MAX];
 
 static int init_java_function_handler(const char *class_name, java_function_handler *handler)
 {
-    handler->env = SDL_AndroidGetJNIEnv();
+    handler->env = SDL_GetAndroidJNIEnv();
     if (handler->env == NULL) {
         SDL_Log("Problem setting up JNI environment");
         return 0;
@@ -33,7 +33,7 @@ static int init_java_function_handler(const char *class_name, java_function_hand
         SDL_Log("Problem loading class '%s'.", class_name);
         return 0;
     }
-    handler->activity = (jobject) SDL_AndroidGetActivity();
+    handler->activity = (jobject) SDL_GetAndroidActivity();
     if (handler->activity == NULL) {
         SDL_Log("Problem loading the activity.");
         return 0;
@@ -225,14 +225,16 @@ JNIEXPORT void JNICALL Java_com_github_bvschaik_julius_JuliusMainActivity_gotDir
 
 void platform_show_virtual_keyboard(void)
 {
-    if (!SDL_IsTextInputActive()) {
-        SDL_StartTextInput();
+    SDL_Window *window = SDL_GetMouseFocus();
+    if (!SDL_TextInputActive(window)) {
+        SDL_StartTextInput(window);
     }
 }
 
 void platform_hide_virtual_keyboard(void)
 {
-    if (SDL_IsTextInputActive()) {
-        SDL_StopTextInput();
+    SDL_Window *window = SDL_GetMouseFocus();
+    if (SDL_TextInputActive(window)) {
+        SDL_StopTextInput(window);
     }
 }

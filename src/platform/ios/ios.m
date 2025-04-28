@@ -1,11 +1,11 @@
 #import "ios.h"
 
 #import "GameDataPickerController.h"
-#import "SDL.h"
-#import "SDL_messagebox.h"
-#import "SDL_system.h"
-#import "SDL_syswm.h"
-#import "SDL_video.h"
+#import <SDL3/SDL.h>
+#import <SDL3/SDL_messagebox.h>
+#import <SDL3/SDL_system.h>
+#import <SDL3/SDL_syswm.h>
+#import <SDL3/SDL_video.h>
 
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 

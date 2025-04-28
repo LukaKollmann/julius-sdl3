@@ -7,7 +7,7 @@
 #include "platform/switch/switch.h"
 #include "platform/vita/vita.h"
 
-#include "SDL.h"
+#include <SDL3/SDL.h>
 
 static struct {
     SDL_Cursor *cursors[CURSOR_MAX];
@@ -30,8 +30,8 @@ static const color_t mouse_colors[] = {
 static SDL_Surface *generate_cursor_surface(const cursor *c)
 {
     int size = platform_cursor_get_texture_size(c->width, c->height);
-    SDL_Surface *cursor_surface =
-        SDL_CreateRGBSurface(0, size, size, 32, 0x00ff0000, 0x0000ff00, 0x000000ff, 0xff000000);
+    SDL_Surface *cursor_surface = SDL_CreateSurface(size, size,SDL_GetPixelFormatForMasks(32, 0x00ff0000, 0x0000ff00, 0x000000ff, 0xff000000));
+
     color_t *pixels = cursor_surface->pixels;
     SDL_memset(pixels, 0, sizeof(color_t) * size * size);
     for (int y = 0; y < c->height; y++) {
@@ -59,16 +59,16 @@ void system_init_cursors(int scale_percentage)
     for (int i = 0; i < CURSOR_MAX; i++) {
         const cursor *c = input_cursor_data(i, data.current_scale);
         if (data.surfaces[i]) {
-            SDL_FreeSurface(data.surfaces[i]);
+            SDL_DestroySurface(data.surfaces[i]);
         }
         if (data.cursors[i]) {
-            SDL_FreeCursor(data.cursors[i]);
+            SDL_DestroyCursor(data.cursors[i]);
         }
         data.surfaces[i] = generate_cursor_surface(c);
 #ifndef PLATFORM_USE_SOFTWARE_CURSOR
         data.cursors[i] = SDL_CreateColorCursor(data.surfaces[i], c->hotspot_x, c->hotspot_y);
 #else
-        SDL_ShowCursor(SDL_DISABLE);
+        SDL_HideCursor();
         platform_screen_generate_mouse_cursor_texture(i, data.current_scale, data.surfaces[i]->pixels);
 #endif
     }
